@@ -1,10 +1,10 @@
 #ITECH Power Supply controller GUI using PYTHON 
 #PROTOCOL used PYVISA
 #Connection using USB to B-Type cable
-#This GUI configures the voltage and curent
+#This GUI configures the voltage, current and frequency
 #It connects and disconnects the power supply from GUI
 #Logs the meter values of voltage and current in .CSV format
-
+#if you are using this for DC so frequency is not the factor to configure so power goes in error mode
 
 import sys
 import pandas as pd
