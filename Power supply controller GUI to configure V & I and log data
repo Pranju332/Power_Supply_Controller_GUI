@@ -1,0 +1,208 @@
+#ITECH Power Supply controller GUI using PYTHON 
+#PROTOCOL used PYVISA
+#Connection using USB to B-Type cable
+#This GUI configures the voltage and curent
+#It connects and disconnects the power supply from GUI
+#Logs the meter values of voltage and current in .CSV format
+
+
+import sys
+import pandas as pd
+from PyQt5.QtWidgets import (
+    QApplication, QWidget, QVBoxLayout, QLabel,
+    QPushButton, QMessageBox, QLineEdit,
+    QComboBox, QTextEdit
+)
+from PyQt5.QtCore import QTimer, QDateTime
+import pyvisa
+
+
+class PowerSupplyGUI(QWidget):
+    def __init__(self):
+        super().__init__()
+        self.setWindowTitle("Power Supply Controller")
+        self.setGeometry(300, 300, 500, 500)
+
+        self.layout = QVBoxLayout()
+
+        # COM Port Selection
+        self.port_dropdown = QComboBox()
+        self.refresh_ports()
+
+        # Voltage, Current and Frequency Input
+        self.voltage_input = QLineEdit()
+        self.voltage_input.setPlaceholderText("Enter Voltage (e.g. 22.0)")
+
+        self.current_input = QLineEdit()
+        self.current_input.setPlaceholderText("Enter Current (e.g. 2.0)")
+
+        self.freq_input = QLineEdit()
+        self.freq_input.setPlaceholderText("Enter Frequency (e.g. 49.0)")
+
+        # Info and Output Labels
+        self.info_label = QLabel("Status: Not Connected")
+        self.volt_label = QLabel("Measured Voltage: N/A")
+        self.curr_label = QLabel("Measured Current: N/A")
+
+        # Log Area
+        self.log_output = QTextEdit()
+        self.log_output.setReadOnly(True)
+        self.log_output.setPlaceholderText("Command log...")
+
+        # Buttons
+        self.connect_button = QPushButton("Connect")
+        self.config_button = QPushButton("Configure Power Supply")
+        self.disconnect_button = QPushButton("Disconnect")
+        self.start_log_button = QPushButton("Start Logging")
+        self.stop_log_button = QPushButton("Stop Logging")
+
+        # Button Actions
+        self.connect_button.clicked.connect(self.connect_to_supply)
+        self.config_button.clicked.connect(self.configure_supply)
+        self.disconnect_button.clicked.connect(self.disconnect_supply)
+        self.start_log_button.clicked.connect(self.start_logging)
+        self.stop_log_button.clicked.connect(self.stop_logging)
+
+        # Add widgets to layout
+        self.layout.addWidget(QLabel("Select COM Port:"))
+        self.layout.addWidget(self.port_dropdown)
+        self.layout.addWidget(self.voltage_input)
+        self.layout.addWidget(self.current_input)
+        self.layout.addWidget(self.freq_input)
+        self.layout.addWidget(self.info_label)
+        self.layout.addWidget(self.volt_label)
+        self.layout.addWidget(self.curr_label)
+        self.layout.addWidget(self.connect_button)
+        self.layout.addWidget(self.config_button)
+        self.layout.addWidget(self.start_log_button)
+        self.layout.addWidget(self.stop_log_button)
+        self.layout.addWidget(self.disconnect_button)
+        self.layout.addWidget(QLabel("Log Output:"))
+        self.layout.addWidget(self.log_output)
+
+        self.setLayout(self.layout)
+
+        # VISA handles
+        self.rm = None
+        self.power_supply = None
+
+        # Timer and Logging
+        self.timer = QTimer()
+        self.timer.timeout.connect(self.log_measurements)
+        self.data_log = pd.DataFrame(columns=["Timestamp", "Voltage (V)", "Current (A)"])
+
+    def refresh_ports(self):
+        try:
+            rm = pyvisa.ResourceManager()
+            ports = rm.list_resources()
+            self.port_dropdown.addItems(ports)
+        except Exception as e:
+            QMessageBox.critical(self, "Error listing COM ports", str(e))
+
+    def log(self, message):
+        self.log_output.append(message)
+
+    def connect_to_supply(self):
+        try:
+            selected_port = self.port_dropdown.currentText()
+            self.rm = pyvisa.ResourceManager()
+            self.power_supply = self.rm.open_resource(selected_port, open_timeout=10000)
+            self.write_command("SYST:REM")
+
+            idn = self.query_command("*IDN?")
+            self.info_label.setText(f"Connected: {idn.strip()}")
+            self.log(f"Connected to: {idn.strip()}")
+        except Exception as e:
+            QMessageBox.critical(self, "Connection Error", str(e))
+            self.log(f"Connection Error: {str(e)}")
+
+    def configure_supply(self):
+        if self.power_supply:
+            try:
+                voltage = self.voltage_input.text()
+                current = self.current_input.text()
+                freq = self.freq_input.text()
+
+                if not voltage or not current or not freq:
+                    QMessageBox.warning(self, "Input Error", "Enter voltage, current, and frequency.")
+                    return
+
+                self.write_command("OUTP OFF")
+                self.write_command(f"FREQ {freq}")
+                self.write_command(f"VOLT {voltage}")
+                self.write_command(f"CURR {current}")
+                self.write_command("OUTP ON")
+
+                voltage = self.query_command("MEAS:VOLT?").strip()
+                current = self.query_command("MEAS:CURR?").strip()
+
+                self.volt_label.setText(f"Measured Voltage: {voltage} V")
+                self.curr_label.setText(f"Measured Current: {current} A")
+                self.log(f"Configured: {voltage} V, {current} A")
+            except Exception as e:
+                QMessageBox.warning(self, "Command Error", str(e))
+                self.log(f"Command Error: {str(e)}")
+        else:
+            QMessageBox.warning(self, "Warning", "Not connected to power supply.")
+            self.log("Configure failed: No connection.")
+
+    def disconnect_supply(self):
+        if self.power_supply:
+            try:
+                self.write_command("OUTP OFF")
+                self.power_supply.close()
+                self.info_label.setText("Disconnected")
+                self.volt_label.setText("Measured Voltage: N/A")
+                self.curr_label.setText("Measured Current: N/A")
+                self.log("Disconnected from power supply.")
+                self.stop_logging()
+            except Exception as e:
+                QMessageBox.warning(self, "Disconnection Error", str(e))
+                self.log(f"Disconnection Error: {str(e)}")
+
+    def start_logging(self):
+        if self.power_supply:
+            self.data_log = pd.DataFrame(columns=["Timestamp", "Voltage (V)", "Current (A)"])
+            self.timer.start(1000)  # Log every 1 second
+            self.log("Started logging measurements...")
+        else:
+            QMessageBox.warning(self, "Warning", "Connect to power supply first.")
+            self.log("Start Logging failed: No connection.")
+
+    def stop_logging(self):
+        self.timer.stop()
+        try:
+            self.data_log.to_csv("Power_Log.csv", index=False)
+            self.log("Stopped logging. Data saved to Power_Log.csv")
+        except Exception as e:
+            self.log(f"Error saving log: {str(e)}")
+
+    def log_measurements(self):
+        try:
+            voltage = float(self.query_command("MEAS:VOLT?").strip())
+            current = float(self.query_command("MEAS:CURR?").strip())
+            timestamp = QDateTime.currentDateTime().toString("yyyy-MM-dd HH:mm:ss")
+
+            self.volt_label.setText(f"Measured Voltage: {voltage} V")
+            self.curr_label.setText(f"Measured Current: {current} A")
+
+            new_row = {"Timestamp": timestamp, "Voltage (V)": voltage, "Current (A)": current}
+            self.data_log = pd.concat([self.data_log, pd.DataFrame([new_row])], ignore_index=True)
+        except Exception as e:
+            self.log(f"Logging Error: {str(e)}")
+
+    def write_command(self, cmd):
+        self.power_supply.write(cmd)
+        self.log(f"> {cmd}")
+
+    def query_command(self, cmd):
+        response = self.power_supply.query(cmd)
+        self.log(f"> {cmd}\n< {response.strip()}")
+        return response
+
+
+if __name__ == "__main__":
+    app = QApplication(sys.argv)
+    window = PowerSupplyGUI()
+    window.show()
+    sys.exit(app.exec_())
